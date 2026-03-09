@@ -97,7 +97,7 @@ interface Claim {
 
 interface Pointer {
   role: string;
-  target: Reference | Primitive | ClaimRef;
+  target: Reference | Primitive;
 }
 
 interface Reference {
@@ -105,9 +105,6 @@ interface Reference {
   context?: string;
 }
 
-interface ClaimRef {
-  claim_id: string;  // <tx_id>.<index> format
-}
 
 type Primitive = string | number | boolean;
 ```
@@ -136,7 +133,7 @@ Claims can negate other claims or entire transactions:
 ```typescript
 // Negate a specific claim
 { pointers: [
-  { role: "negates", target: { claim_id: "tx_abc123.5" } }
+  { role: "negates", target: { id: "tx_abc123.5" } }
 ]}
 
 // Void an entire transaction
