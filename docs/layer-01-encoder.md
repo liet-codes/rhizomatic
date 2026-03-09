@@ -1,172 +1,197 @@
 # Layer 1: Encoder
 
-The encoder is a pure function that transforms structured data into a transaction containing an ordered set of claims.
+The encoder transforms structured input into transactions containing ordered sets of claims.
 
-## Contract
+This is not a single function. It is a **protocol** — an interface that users implement for their domains. The core library provides the data structures and validation; you provide the domain-specific encoding logic.
 
+## The Protocol
+
+```typescript
+interface Encoder<T> {
+  encode(input: T, metadata: EncoderMetadata): Transaction;
+}
+
+interface EncoderMetadata {
+  author_id: string;
+  host_id: string;
+  // Optional source reference — where this input came from
+  source?: string;  // URL, file path, citation, DOI, etc.
+}
 ```
-encode : (input: any, config?: EncoderConfig) => Transaction
+
+Encoders are **pure functions** (stateless, deterministic, side-effect free) but they are **domain-specific**. There is no universal encoder. A user record, a purchase transaction, and a research paper each need their own encoder that understands their semantics.
+
+## Why Domain-Specific?
+
+Consider two inputs:
+
+### User Record: `{ id: "u1", name: "Alice", age: 30 }`
+
+Name and age can vary independently. Encode as **separate claims**:
+
+```typescript
+// Claim 1: name
+{ pointers: [
+  { role: "entity", target: { id: "u1", context: "name" } },
+  { role: "name", target: "Alice" }
+]}
+
+// Claim 2: age  
+{ pointers: [
+  { role: "entity", target: { id: "u1", context: "age" } },
+  { role: "age", target: 30 }
+]}
 ```
 
-The encoder has no dependencies on storage, indexing, or query layers. It is stateless, deterministic, and side-effect free.
+### Purchase Record: `{ purchase_id, item_id, vendor_name, purchase_date, buyer_id, price_number, price_currency }`
 
-## Transaction Structure
+These fields are **tightly coupled**. Changing any one describes a different purchase. Encode as **one complex claim**:
+
+```typescript
+{ pointers: [
+  { role: "purchase", target: { id: purchase_id } },
+  { role: "item", target: { id: item_id } },
+  { role: "vendor", target: vendor_name },
+  { role: "date", target: purchase_date },
+  { role: "buyer", target: { id: buyer_id } },
+  { role: "price", target: price_number },
+  { role: "currency", target: price_currency }
+]}
+```
+
+### Research Paper: Full PDF + metadata
+
+The encoder might extract **multiple claims** representing key insights, findings, or citations. Each claim carries different pointers to the paper's entities, methods, results.
+
+The encoder decides: one input → one claim, or one input → many claims, or one input → claims plus nested transactions. The library doesn't prescribe; the domain decides.
+
+## Data Structures
+
+### Transaction
 
 ```typescript
 interface Transaction {
-  // Provenance metadata — shared by all claims in the transaction
+  // Provenance metadata — shared by all claims
   tx_id: string;        // UUID or ULID
   timestamp: number;    // Unix timestamp (milliseconds)
-  host_id: string;      // System identifier (machine, node, etc.)
-  author_id: string;    // Entity identifier (user, process, etc.)
+  host_id: string;      // System that recorded
+  author_id: string;    // Entity that authored
+  
+  // Optional source reference — where input came from
+  // URL, file path, DOI, citation, database record ID, etc.
+  source?: string;
   
   // Ordered payload
   claims: Claim[];
 }
+```
 
+The `source` field enables provenance tracking: "This transaction represents claims extracted from [source]."
+
+### Claim
+
+```typescript
 interface Claim {
-  // Identity is positional within transaction
-  // Full claim_id: <tx_id>.<index>
-  // Within transaction, index is sufficient for reference
-  
-  // Structural content — the claim itself
-  pointers: Pointer[];  // Ordered array of contextualized pointers
+  pointers: Pointer[];
 }
 
 interface Pointer {
-  // The semantic role of this pointer from the claim's perspective
   role: string;
-  
-  // The referenced entity or value
-  target: Reference | Primitive;
+  target: Reference | Primitive | ClaimRef;
 }
 
 interface Reference {
-  // Globally unique identifier of the referenced entity
   id: string;
-  
-  // Optional organizational context — qualifies the relationship
-  // e.g., which attribute of this entity this claim concerns
   context?: string;
 }
 
+interface ClaimRef {
+  claim_id: string;  // <tx_id>.<index> format
+}
+
 type Primitive = string | number | boolean;
-// Note: No null, undefined, or array primitives
-// - Absence is represented by lack of claims
-// - Arrays are represented by multiple pointers with the same role
 ```
 
-## Understanding Context
+Claims can reference other claims via `ClaimRef`, enabling:
+- Negation (claim with role "negates" targets another claim)
+- Commentary (claim with role "elaborates" targets another claim)
+- Composition (claims building on claims)
 
-The `context` field on a Reference is not metadata about the claim — it's a **qualifier on the relationship**. It answers: "In what context are we relating to this entity?"
+## Claim Identity & Discovery
 
-Example: encoding `{ user: { id: "u1", name: "Alice", age: 30 } }`
+A claim's identity is `<tx_id>.<index>` where `index` is its position in the transaction's `claims` array.
 
-This produces **two claims** (not one):
+**Within transaction**: Index alone suffices (`claims[3]`).
 
-**Claim 1** — the name relationship:
+**Outside transaction**: Full ID (`tx_abc123.3`).
+
+**Key property**: Claims are never orphaned. If you encounter a claim in isolation, you can resolve its full identity and retrieve its siblings from the same transaction. This creates a **high-dimensional associative space** — claims physically colocated in a transaction are semantically related by shared provenance, even if they don't directly reference each other.
+
+Transactions can also be modeled as nodes. A claim can reference another transaction by its `tx_id`, enabling claims about claims, meta-commentary, or bulk negation.
+
+## Negation
+
+Claims can negate other claims or entire transactions:
+
 ```typescript
-{
-  pointers: [
-    { role: "entity", target: { id: "u1", context: "name" } },
-    { role: "name", target: "Alice" }
-  ]
-}
+// Negate a specific claim
+{ pointers: [
+  { role: "negates", target: { claim_id: "tx_abc123.5" } }
+]}
+
+// Void an entire transaction
+{ pointers: [
+  { role: "voids", target: { id: "tx_def456" } }
+]}
 ```
 
-**Claim 2** — the age relationship:
-```typescript
-{
-  pointers: [
-    { role: "entity", target: { id: "u1", context: "age" } },
-    { role: "age", target: 30 }
-  ]
-}
-```
-
-The context `"name"` on the first claim's entity pointer says: "This claim concerns u1 in the context of its name attribute." The context `"age"` on the second claim says: "This claim concerns u1 in the context of its age attribute."
-
-This allows multiple claims to reference the same entity while making distinct assertions about different aspects of it.
-
-## Claim Identity
-
-A claim's canonical identity is `<tx_id>.<index>` where index is its position in the transaction's claims array.
-
-- **Within transaction**: The index alone is sufficient. `claims[3]` is claim 3.
-- **Outside transaction**: The full identifier is `tx_abc123.3`.
-- **Extraction**: When a claim is extracted from its transaction context, it carries its full identity with it.
-
-This design means:
-- Claims never need explicit `claim_id` fields in storage
-- References between claims within a transaction are compact (just an index)
-- Cross-transaction references use the full identifier
-- Identity is deterministic and derivable from provenance
-
-## Why "Claim" Instead of "Delta"
-
-rhizomedb called these "deltas" but this was misleading. A delta suggests a change — a difference between before and after states. The term carries baggage from event sourcing and CRDT literature that implies temporal causality.
-
-A **claim** is an assertion that some relationship holds as of time `t`. It might reflect a real-time event, or it might be the ingestion of historical data. The claim itself is agnostic to this distinction. What matters is that it asserts structure within a system at a point in time.
-
-Historical time and system time never collapse. A claim ingested in 2026 can assert relationships as of 1960. Both timestamps are preserved: the claim's `timestamp` field records when it was witnessed; the pointers themselves may contain historical timestamps or version information.
-
-## Encoding Strategies
-
-The encoder is not opinionated about input structure. Different strategies can be applied:
-
-### Record Encoding
-
-Input: `{ user: { id: "u1", name: "Alice", age: 30 } }`
-
-Output: **Two claims** — one for name, one for age — using context to distinguish which attribute each concerns.
-
-### Graph Encoding
-
-Input: Graph with nodes and edges
-
-Output: One claim per edge, with pointers for source, target, and relationship type. Context may be used for edge labels or properties.
-
-### Temporal Encoding
-
-Input: Historical record with effective date
-
-Output: Claims with pointers that include temporal context in the reference, enabling queries across historical time.
+The query layer (Layer 4) interprets negation. The encoder just produces the claims.
 
 ## Non-Goals
 
-The encoder explicitly does NOT:
+The encoder layer explicitly does NOT:
 
-- **Validate schemas**: No structural constraints. You can encode anything.
-- **Check uniqueness**: Multiple claims can assert the same relationship.
-- **Resolve conflicts**: Contradictory claims are both valid.
-- **Index data**: No lookups, no materialized views.
-- **Store anything**: Pure function, no side effects.
-- **Interpret meaning**: It produces claims. What they mean is a query-layer concern.
-- **Diff against previous state**: The encoder takes stateful data and expresses it as claims. Whether those claims are novel or redundant is not its concern.
-
-## Extensibility
-
-Encoder configurations can provide:
-
-- Custom pointer formats
-- Different reference strategies  
-- Role conventions
-- Value serialization rules
-- How to derive context from input structure
-
-But the transaction envelope format is fixed. All encoders produce the same transaction structure, enabling the rest of the stack to work uniformly.
+- **Validate schemas**: No structural constraints on input
+- **Check uniqueness**: Multiple claims can assert the same relationship
+- **Resolve conflicts**: Contradictory claims are both valid
+- **Index data**: No lookups, no materialized views
+- **Store anything**: Pure function, no side effects
+- **Interpret meaning**: Produces claims; meaning is query-layer concern
+- **Enforce encoding strategy**: Domain decides granularity
 
 ## Testing
 
-Because the encoder is pure, it's fully testable without mocks:
+Encoders are pure and testable:
 
 ```typescript
-const input = { user: { id: "u1", name: "Alice" } };
-const tx = encode(input);
+const encoder: Encoder<UserRecord> = {
+  encode(input, meta) {
+    return {
+      tx_id: generateUUID(),
+      timestamp: Date.now(),
+      host_id: meta.host_id,
+      author_id: meta.author_id,
+      claims: [
+        { pointers: [
+          { role: "entity", target: { id: input.id, context: "name" } },
+          { role: "name", target: input.name }
+        ]}
+        // ... more claims for other fields
+      ]
+    };
+  }
+};
 
-assert(tx.claims.length === 1); // One attribute = one claim
-assert(tx.claims[0].pointers[0].role === "entity");
-assert(tx.claims[0].pointers[0].target.id === "u1");
-assert(tx.claims[0].pointers[0].target.context === "name");
-assert(tx.claims[0].pointers[1].target === "Alice");
+// Test
+test("user encoder produces claim for name", () => {
+  const tx = encoder.encode({ id: "u1", name: "Alice" }, meta);
+  assert(tx.claims[0].pointers[0].target.context === "name");
+});
 ```
+
+## Layer 1 Summary
+
+- **Input**: Domain-specific structured data (records, events, documents)
+- **Process**: Domain-specific encoder implements `encode(input, metadata) → Transaction`
+- **Output**: Transaction containing ordered claims with pointers
+- **Key properties**: Pure, domain-specific, no storage/query/indexing, provenance-tracked
