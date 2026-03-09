@@ -45,7 +45,8 @@ interface Reference {
   // Globally unique identifier of the referenced entity
   id: string;
   
-  // Optional organizational context
+  // Optional organizational context — qualifies the relationship
+  // e.g., which attribute of this entity this claim concerns
   context?: string;
 }
 
@@ -54,6 +55,38 @@ type Primitive = string | number | boolean;
 // - Absence is represented by lack of claims
 // - Arrays are represented by multiple pointers with the same role
 ```
+
+## Understanding Context
+
+The `context` field on a Reference is not metadata about the claim — it's a **qualifier on the relationship**. It answers: "In what context are we relating to this entity?"
+
+Example: encoding `{ user: { id: "u1", name: "Alice", age: 30 } }`
+
+This produces **two claims** (not one):
+
+**Claim 1** — the name relationship:
+```typescript
+{
+  pointers: [
+    { role: "entity", target: { id: "u1", context: "name" } },
+    { role: "name", target: "Alice" }
+  ]
+}
+```
+
+**Claim 2** — the age relationship:
+```typescript
+{
+  pointers: [
+    { role: "entity", target: { id: "u1", context: "age" } },
+    { role: "age", target: 30 }
+  ]
+}
+```
+
+The context `"name"` on the first claim's entity pointer says: "This claim concerns u1 in the context of its name attribute." The context `"age"` on the second claim says: "This claim concerns u1 in the context of its age attribute."
+
+This allows multiple claims to reference the same entity while making distinct assertions about different aspects of it.
 
 ## Claim Identity
 
@@ -85,28 +118,19 @@ The encoder is not opinionated about input structure. Different strategies can b
 
 Input: `{ user: { id: "u1", name: "Alice", age: 30 } }`
 
-Output claims:
-```typescript
-{
-  pointers: [
-    { role: "entity", target: { id: "u1" } },
-    { role: "attribute", target: "name" },
-    { role: "value", target: "Alice" }
-  ]
-}
-```
+Output: **Two claims** — one for name, one for age — using context to distinguish which attribute each concerns.
 
 ### Graph Encoding
 
 Input: Graph with nodes and edges
 
-Output: One claim per edge, with pointers for source, target, and relationship type.
+Output: One claim per edge, with pointers for source, target, and relationship type. Context may be used for edge labels or properties.
 
 ### Temporal Encoding
 
 Input: Historical record with effective date
 
-Output: Claims with pointers that include temporal context, enabling queries across historical time.
+Output: Claims with pointers that include temporal context in the reference, enabling queries across historical time.
 
 ## Non-Goals
 
@@ -125,9 +149,10 @@ The encoder explicitly does NOT:
 Encoder configurations can provide:
 
 - Custom pointer formats
-- Different reference strategies
+- Different reference strategies  
 - Role conventions
 - Value serialization rules
+- How to derive context from input structure
 
 But the transaction envelope format is fixed. All encoders produce the same transaction structure, enabling the rest of the stack to work uniformly.
 
@@ -139,7 +164,9 @@ Because the encoder is pure, it's fully testable without mocks:
 const input = { user: { id: "u1", name: "Alice" } };
 const tx = encode(input);
 
-assert(tx.claims.length === 1);
+assert(tx.claims.length === 1); // One attribute = one claim
 assert(tx.claims[0].pointers[0].role === "entity");
 assert(tx.claims[0].pointers[0].target.id === "u1");
+assert(tx.claims[0].pointers[0].target.context === "name");
+assert(tx.claims[0].pointers[1].target === "Alice");
 ```
