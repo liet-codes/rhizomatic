@@ -1,4 +1,4 @@
-# Encoder
+# Layer 1: Encoder
 
 The encoder is a pure function that transforms structured data into a transaction containing an ordered set of claims.
 
@@ -29,16 +29,30 @@ interface Claim {
   // Full claim_id: <tx_id>.<index>
   // Within transaction, index is sufficient for reference
   
-  // Structural content — the actual claim
-  nodes: NodeRef[];     // Ordered array of node references
-  label?: string;       // Optional relationship label
-  value?: any;          // Optional literal value
+  // Structural content — the claim itself
+  pointers: Pointer[];  // Ordered array of contextualized pointers
 }
 
-interface NodeRef {
-  id: string;           // Globally unique node identifier
-  type?: string;        // Optional type hint
+interface Pointer {
+  // The semantic role of this pointer from the claim's perspective
+  role: string;
+  
+  // The referenced entity or value
+  target: Reference | Primitive;
 }
+
+interface Reference {
+  // Globally unique identifier of the referenced entity
+  id: string;
+  
+  // Optional organizational context
+  context?: string;
+}
+
+type Primitive = string | number | boolean;
+// Note: No null, undefined, or array primitives
+// - Absence is represented by lack of claims
+// - Arrays are represented by multiple pointers with the same role
 ```
 
 ## Claim Identity
@@ -55,6 +69,14 @@ This design means:
 - Cross-transaction references use the full identifier
 - Identity is deterministic and derivable from provenance
 
+## Why "Claim" Instead of "Delta"
+
+rhizomedb called these "deltas" but this was misleading. A delta suggests a change — a difference between before and after states. The term carries baggage from event sourcing and CRDT literature that implies temporal causality.
+
+A **claim** is an assertion that some relationship holds as of time `t`. It might reflect a real-time event, or it might be the ingestion of historical data. The claim itself is agnostic to this distinction. What matters is that it asserts structure within a system at a point in time.
+
+Historical time and system time never collapse. A claim ingested in 2026 can assert relationships as of 1960. Both timestamps are preserved: the claim's `timestamp` field records when it was witnessed; the pointers themselves may contain historical timestamps or version information.
+
 ## Encoding Strategies
 
 The encoder is not opinionated about input structure. Different strategies can be applied:
@@ -64,20 +86,27 @@ The encoder is not opinionated about input structure. Different strategies can b
 Input: `{ user: { id: "u1", name: "Alice", age: 30 } }`
 
 Output claims:
-- `[{ id: "u1" }], "hasAttribute", "name", "Alice"`
-- `[{ id: "u1" }], "hasAttribute", "age", 30`
+```typescript
+{
+  pointers: [
+    { role: "entity", target: { id: "u1" } },
+    { role: "attribute", target: "name" },
+    { role: "value", target: "Alice" }
+  ]
+}
+```
 
 ### Graph Encoding
 
 Input: Graph with nodes and edges
 
-Output: One claim per edge, nodes in the nodes array
+Output: One claim per edge, with pointers for source, target, and relationship type.
 
-### Diff Encoding (Legacy)
+### Temporal Encoding
 
-Input: `{ before: {...}, after: {...} }`
+Input: Historical record with effective date
 
-Output: Claims only for changed fields. This is supported but not privileged — the claim format doesn't care whether it's derived from a diff or a snapshot.
+Output: Claims with pointers that include temporal context, enabling queries across historical time.
 
 ## Non-Goals
 
@@ -89,14 +118,15 @@ The encoder explicitly does NOT:
 - **Index data**: No lookups, no materialized views.
 - **Store anything**: Pure function, no side effects.
 - **Interpret meaning**: It produces claims. What they mean is a query-layer concern.
+- **Diff against previous state**: The encoder takes stateful data and expresses it as claims. Whether those claims are novel or redundant is not its concern.
 
 ## Extensibility
 
 Encoder configurations can provide:
 
-- Custom claim formats
-- Different node reference strategies
-- Label conventions
+- Custom pointer formats
+- Different reference strategies
+- Role conventions
 - Value serialization rules
 
 But the transaction envelope format is fixed. All encoders produce the same transaction structure, enabling the rest of the stack to work uniformly.
@@ -109,7 +139,7 @@ Because the encoder is pure, it's fully testable without mocks:
 const input = { user: { id: "u1", name: "Alice" } };
 const tx = encode(input);
 
-assert(tx.claims.length === 2);
-assert(tx.claims[0].nodes[0].id === "u1");
-assert(tx.claims[0].label === "hasAttribute");
+assert(tx.claims.length === 1);
+assert(tx.claims[0].pointers[0].role === "entity");
+assert(tx.claims[0].pointers[0].target.id === "u1");
 ```
