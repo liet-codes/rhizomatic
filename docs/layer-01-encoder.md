@@ -1,4 +1,4 @@
-# Layer 1: Encoder
+# Encoder
 
 The encoder is a pure function that transforms structured data into a transaction containing an ordered set of claims.
 
