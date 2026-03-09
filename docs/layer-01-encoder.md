@@ -203,3 +203,69 @@ The encoder does NOT:
 **Right (output)**: `Transaction` — the universal interchange format. Whatever consumes transactions (Layer 2: Storage) accepts this structure and only this structure.
 
 **Configuration**: Vocabulary (roles + contexts) provided by the domain. Validation checks conformance.
+
+## Ecosystem: Claim Builder Libraries
+
+The encoder protocol defines shapes. On top of it, domain communities can build and share **claim builder libraries** — packages of functions that produce claims with standardized roles and contexts for a specific field.
+
+### Example: Organic Chemistry
+
+```typescript
+// @rhizomatic/orgchem — shared claim builders for computational chemistry
+
+function reaction(opts: {
+  reactants: string[],
+  products: string[],
+  catalyst?: string,
+  conditions?: string
+}): Claim {
+  return {
+    pointers: [
+      ...opts.reactants.map(r => ({ role: "reactant", target: { id: r, context: "reactions" } })),
+      ...opts.products.map(p => ({ role: "product", target: { id: p, context: "synthesis" } })),
+      ...(opts.catalyst ? [{ role: "catalyst", target: { id: opts.catalyst, context: "catalysis" } }] : []),
+      ...(opts.conditions ? [{ role: "conditions", target: opts.conditions }] : [])
+    ]
+  };
+}
+
+function synthesis(opts: {
+  steps: string[],
+  yield_pct: number,
+  purity_pct: number
+}): Claim { /* ... */ }
+
+function spectralAnalysis(opts: {
+  compound: string,
+  method: string, // NMR, IR, MS, etc.
+  peaks: number[]
+}): Claim { /* ... */ }
+```
+
+### The Interoperability Play
+
+If you use `@rhizomatic/orgchem` builders:
+- Your claims interoperate with any tool that understands the orgchem vocabulary
+- A growing ecosystem of computational chemistry tools can consume your data
+- Claims can be used to fine-tune domain-specific models
+- Different encoders (LLM, programmatic, instrument pipelines) produce compatible output
+
+The builders are just convenience. They don't add new semantics — they encode domain conventions into reusable functions that guarantee vocabulary conformance. The claims they produce are standard claims. Nothing special about them structurally.
+
+### Hybrid Encoder Patterns
+
+An LLM encoder might:
+1. **Receive builders as tools** — call `reaction()`, `synthesis()` as function calls
+2. **Write its own builders** — generate helper functions for consistent output structure, then use them
+3. **Hand-roll claims** — construct each claim from scratch using the raw vocabulary
+4. **Mix approaches** — use builders for common patterns, hand-roll for unusual observations
+
+A programmatic encoder might:
+1. **Import builders directly** — call them from instrument data pipelines
+2. **Compose builders** — chain multiple builders to represent complex multi-step processes
+
+A human encoder might:
+1. **Use a UI powered by builders** — form fields map to builder arguments
+2. **Override with raw claims** — when the builders don't capture what they need to express
+
+The protocol doesn't care. Builders are a convenience layer, not a requirement. The only requirement is: valid transactions come out the other end.
